@@ -7,6 +7,12 @@ import (
 	"sync"
 )
 
+func getCrc32Hash(data string, ch chan<- string) {
+	defer close(ch)
+	crc32 := DataSignerCrc32(data)
+	ch <- crc32
+}
+
 func SingleHash(in, out chan interface{}) {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -21,17 +27,8 @@ func SingleHash(in, out chan interface{}) {
 			crc32ch := make(chan string)
 			md5ch := make(chan string)
 
-			go func(strData string, ch chan<- string) {
-				defer close(ch)
-				crc32 := DataSignerCrc32(strData)
-				ch <- crc32
-			}(strData, crc32ch)
-
-			go func(md5Data string, ch chan<- string) {
-				defer close(ch)
-				crc32 := DataSignerCrc32(md5Data)
-				ch <- crc32
-			}(md5data, md5ch)
+			go getCrc32Hash(strData, crc32ch)
+			go getCrc32Hash(md5data, md5ch)
 
 			firstRes := <-crc32ch
 			secondRes := <-md5ch
@@ -42,32 +39,34 @@ func SingleHash(in, out chan interface{}) {
 	wg.Wait()
 }
 
+func getMultiHash(data string, wg *sync.WaitGroup, maxTh int, out chan<- interface{}) {
+	defer wg.Done()
+	var wgTh sync.WaitGroup
+	var mu sync.Mutex
+	hashList := make([]string, maxTh)
+
+	for th := 0; th < maxTh; th++ {
+		wgTh.Add(1)
+		go func(th int) {
+			defer wgTh.Done()
+			hash := DataSignerCrc32(strconv.Itoa(th) + data)
+			mu.Lock()
+			hashList[th] = hash
+			mu.Unlock()
+		}(th)
+	}
+	wgTh.Wait()
+	res := strings.Join(hashList, "")
+	out <- res
+}
+
 func MultiHash(in, out chan interface{}) {
 	var wg sync.WaitGroup
 	const maxTh = 6
 	for data := range in {
 		strData := data.(string)
 		wg.Add(1)
-		go func(data string) {
-			defer wg.Done()
-			var wgTh sync.WaitGroup
-			var mu sync.Mutex
-			hashList := make([]string, 6)
-
-			for th := 0; th < maxTh; th++ {
-				wgTh.Add(1)
-				go func(th int) {
-					defer wgTh.Done()
-					hash := DataSignerCrc32(strconv.Itoa(th) + data)
-					mu.Lock()
-					hashList[th] = hash
-					mu.Unlock()
-				}(th)
-			}
-			wgTh.Wait()
-			res := strings.Join(hashList, "")
-			out <- res
-		}(strData)
+		go getMultiHash(strData, &wg, maxTh, out)
 	}
 	wg.Wait()
 }
